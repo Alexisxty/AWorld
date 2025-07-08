@@ -135,3 +135,6 @@ examples/**/workspaces
 examples/**/data
 examples/**/*.bak
 aworld/cmd/web/webui/dist
+/home/ubuntu/AWorld/workspace
+/home/ubuntu/AWorld/cookie.json
+/home/ubuntu/AWorld/.env
