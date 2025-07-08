@@ -11,7 +11,9 @@ from dotenv import load_dotenv
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, TaskConfig
+from aworld.core.memory import MemoryConfig, VectorDBConfig
 from aworld.core.task import Task
+from aworld.memory.main import MemoryFactory
 from aworld.runner import Runners
 from aworld.core.task import Task
 from examples.gaia.prompt import system_prompt
@@ -23,8 +25,9 @@ from examples.gaia.utils import (
 )
 
 # Create log directory if it doesn't exist
-if not os.path.exists(os.getenv("AWORLD_WORKSPACE")):
-    os.makedirs(os.getenv("AWORLD_WORKSPACE"))
+workspace = os.getenv("AWORLD_WORKSPACE")
+if workspace is not None and not os.path.exists(workspace):
+    os.makedirs(workspace)
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -68,9 +71,10 @@ def setup_logging():
     logging_logger = logging.getLogger()
     logging_logger.setLevel(logging.INFO)
 
+    workspace = os.getenv("AWORLD_WORKSPACE", "")
     log_file_name = f"/super_agent_{args.q}.log" if args.q else f"/super_agent_{args.start}_{args.end}.log"
     file_handler = logging.FileHandler(
-        os.getenv("AWORLD_WORKSPACE") + log_file_name,
+        workspace + log_file_name,
         mode="a",
         encoding="utf-8",
     )
@@ -86,14 +90,27 @@ if __name__ == "__main__":
     load_dotenv()
     setup_logging()
 
+    # 设置 browser MCP 服务器所需的环境变量
+    llm_model_name = os.getenv('LLM_MODEL_NAME_GAIA')
+    if llm_model_name is not None:
+        os.environ['LLM_MODEL_NAME'] = llm_model_name
+    
+    llm_api_key = os.getenv('LLM_API_KEY_GAIA')
+    if llm_api_key is not None:
+        os.environ['LLM_API_KEY'] = llm_api_key
+    
+    llm_base_url = os.getenv('LLM_BASE_URL_GAIA')
+    if llm_base_url is not None:
+        os.environ['LLM_BASE_URL'] = llm_base_url
+
     gaia_dataset_path = os.getenv("GAIA_DATASET_PATH", "./gaia_dataset")
     full_dataset = load_dataset_meta(gaia_dataset_path, split=args.split)
     logging.info(f"Total questions: {len(full_dataset)}")
 
     try:
         with open(Path(__file__).parent / "mcp.json", mode="r", encoding="utf-8") as f:
-            mcp_config: dict[dict[str, Any]] = json.loads(f.read())
-            available_servers: list[str] = list(server_name for server_name in mcp_config.get("mcpServers", {}).keys())
+            mcp_config = json.loads(f.read())
+            available_servers = list(server_name for server_name in mcp_config.get("mcpServers", {}).keys())
             logging.info(f"🔧 MCP Available Servers: {available_servers}")
     except json.JSONDecodeError as e:
         logging.error(f"Error loading mcp_collections.json: {e}")
@@ -105,6 +122,11 @@ if __name__ == "__main__":
         llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
         llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
     )
+    # init memory factory
+    vector_store_config = VectorDBConfig(provider="chroma", config={})
+    memory_config = MemoryConfig(provider="aworld", vector_store_config=vector_store_config)
+    MemoryFactory.init(config=memory_config)
+
     super_agent = Agent(
         conf=agent_config,
         name="gaia_super_agent",
@@ -114,11 +136,13 @@ if __name__ == "__main__":
     )
 
     # load results from the checkpoint file
-    if os.path.exists(os.getenv("AWORLD_WORKSPACE") + "/results.json"):
-        with open(os.getenv("AWORLD_WORKSPACE") + "/results.json", "r", encoding="utf-8") as results_f:
-            results: List[Dict[str, Any]] = json.load(results_f)
+    workspace = os.getenv("AWORLD_WORKSPACE", "")
+    results_path = workspace + "/results.json"
+    if os.path.exists(results_path):
+        with open(results_path, "r", encoding="utf-8") as results_f:
+            results = json.load(results_f)
     else:
-        results: List[Dict[str, Any]] = []
+        results = []
 
     # load blacklist `task_id`
     if args.blacklist_file_path and os.path.exists(args.blacklist_file_path):
@@ -179,16 +203,20 @@ if __name__ == "__main__":
                 task = Task(input=question, agent=super_agent, conf=TaskConfig())
                 result = Runners.sync_run_task(task=task)
 
-                match = re.search(r"<answer>(.*?)</answer>", result[task.id].answer)
-                if match:
-                    answer = match.group(1)
-                    logging.info(f"Agent answer: {answer}")
-                    logging.info(f"Correct answer: {dataset_i['Final answer']}")
+                match = None
+                answer = ""
+                answer_text = result[task.id].answer
+                if answer_text is not None:
+                    match = re.search(r"<answer>(.*?)</answer>", answer_text)
+                    if match:
+                        answer = match.group(1)
+                        logging.info(f"Agent answer: {answer}")
+                        logging.info(f"Correct answer: {dataset_i['Final answer']}")
 
-                    if question_scorer(answer, dataset_i["Final answer"]):
-                        logging.info(f"Question {i} Correct!")
-                    else:
-                        logging.info("Incorrect!")
+                        if question_scorer(answer, dataset_i["Final answer"]):
+                            logging.info(f"Question {i} Correct!")
+                        else:
+                            logging.info("Incorrect!")
 
                 # Create the new result record
                 new_result = {
@@ -223,5 +251,6 @@ if __name__ == "__main__":
     finally:
         # report
         report_results(results)
-        with open(os.getenv("AWORLD_WORKSPACE") + "/results.json", "w", encoding="utf-8") as f:
+        workspace = os.getenv("AWORLD_WORKSPACE", "")
+        with open(workspace + "/results.json", "w", encoding="utf-8") as f:
             json.dump(results, f, indent=4, ensure_ascii=False)
