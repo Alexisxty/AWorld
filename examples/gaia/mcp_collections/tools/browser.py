@@ -90,6 +90,7 @@ class BrowserActionCollection(ActionCollection):
         # Browser profile configuration
         self.browser_profile = BrowserProfile(
             cookies_file=os.getenv("COOKIES_FILE_PATH"),
+            user_data_dir=None,  # 设置为None，只使用cookies_file
             downloads_dir=str(self.workspace),
             downloads_path=str(self.workspace),
             save_recording_path=str(self.workspace),
